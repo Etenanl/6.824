@@ -420,11 +420,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.persist()
 	return index,term,isLeader
 
-
-
-
-
-	return index, term, isLeader
 }
 
 //
