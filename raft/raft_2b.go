@@ -172,7 +172,6 @@ func (rf *Raft) GetState() (int, bool) {
 	}else{
 		isleader = false
 	}
-	///log.Printf("peer:%d,term:%d,isleader : %t",rf.me, term,isleader)
 	return term, isleader
 }
 
@@ -335,7 +334,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	// 如果收到的term<=自己的term，说明对方开始竞选前的term小于自己
 	if args.Term < rf.currentTerm{
-		log.Printf("Peer %d(%d,%d) : hav higher term than %d,ID%d", rf.me,rf.currentTerm,rf.state,args.Term,args.CandidateId)
 		rf.mu.Unlock()
 		return 
 	}else if args.Term >= rf.currentTerm{
@@ -351,7 +349,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		(args.LastLogTerm>rf.LastTerm()|| 
 		(args.LastLogTerm==rf.LastTerm()&& args.LastLogIndex>=len(rf.log)) ){
 			// 如果候选者的log比receiver新
-			log.Printf("Peer %d(%d,%d) : receive RequestVote,Be Follower", rf.me,rf.currentTerm,rf.state)
 			reply.VoteGranted = true
 			rf.votedFor = args.CandidateId
 			rf.followerOut = 0
@@ -361,10 +358,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		
 		}else{
 			// 如果votedfor不为NILL则说明已经进行了投票
-			log.Printf("Peer %d(%d,%d) : already vote for %d", rf.me,rf.currentTerm,rf.state,rf.votedFor)
-			log.Printf("args.LastLogTerm:%d   me.LastTerm:%d   args.LastLogIndex:%d    len(rf.log):%d", args.LastLogTerm,rf.LastTerm(),args.LastLogIndex,len(rf.log))
-			log.Println(rf.state)
-			log.Println(rf.followerOut)
 			rf.mu.Unlock()
 			return
 		}
@@ -382,9 +375,7 @@ func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 	
 	if  args.Term > rf.currentTerm{
 		rf.followerOut = 0
-		log.Println("beat1")
 		rf.mu.Unlock()
-		///log.Printf("Peer %d(%d,%d) : change to follower", rf.me,rf.currentTerm,rf.state)
 		rf.BeFollower(args.Term, args.LeaderId)
 
 		return
@@ -395,18 +386,12 @@ func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 		rf.mu.Unlock()
 		rf.BeFollower(args.Term, args.LeaderId)
 		rf.mu.Lock()
-		log.Println("beat2")
-		log.Printf("state:%d", rf.state)
 		// 心跳，直接返回
 		if len(args.Entries) == 0{
-			//log.Printf("heart beat from %d",args.LeaderId)
 
 			if rf.LastTerm() == args.Term{
 				if args.LeaderCommit > rf.commitIndex{
-					log.Printf("peer: %d change commitIndex %d", rf.me,rf.commitIndex)
-
 					rf.commitIndex = Min(args.LeaderCommit, len(rf.log)-1)
-					log.Printf("peer: %d change commitIndex %d instead %d  and data is empty", rf.me,rf.commitIndex , len(rf.log)-1)
 				}
 			}
 			reply.UpNextIndex = rf.lastApplied
@@ -437,10 +422,7 @@ func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 		rf.log = append(rf.log, args.Entries...)
 
 		if args.LeaderCommit > rf.commitIndex{
-			//log.Printf("peer: %d change commitIndex %d", rf.me,rf.commitIndex)
-			//log.Println(rf.log)
 			rf.commitIndex = Min(args.LeaderCommit, len(rf.log)-1)
-			//log.Printf("peer: %d change commitIndex %d", rf.me,rf.commitIndex)
 		}
 
 		reply.UpNextIndex = len(rf.log)
@@ -536,9 +518,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	rf.persist()
 
-	log.Printf("Leader:%d append log",rf.me)
-	
-	log.Println(command)
 	return index,term,isLeader
 
 }
@@ -591,7 +570,6 @@ func (rf *Raft) Timer() {
 		}else if rf.state == Follower{
 			rf.followerOut += 1
 			if rf.followerOut >= FTimeOut{
-				log.Printf("peer %d going to be candidate", rf.me)
 				rf.followerOut = 0
 				rf.state = Candidate
 				rf.mu.Unlock()
@@ -620,9 +598,6 @@ func (rf *Raft)ApplyEntries(){
 			middleMatch[rf.me] = len(rf.log)-1
 			sort.Ints(middleMatch)
 			midIndex := len(middleMatch)/2
-			//log.Printf("leader:%d wangt update commit", rf.me)
-			//log.Println(rf.matchIndex)
-			//log.Printf("leader:%d trying to update commit %d", rf.me,middleMatch[midIndex])
 			if middleMatch[midIndex] == -1 || middleMatch[midIndex] == rf.commitIndex{
 				rf.mu.Unlock()
 				continue
@@ -642,7 +617,7 @@ func (rf *Raft)ApplyEntries(){
 		}
 		rf.mu.Lock()
 		for rf.lastApplied <= rf.commitIndex{
-			//log.Printf("applied:%d    commitIndex:%d", rf.lastApplied,rf.commitIndex)
+
 			if rf.log[rf.lastApplied].IsEmpty == true{
 				rf.lastApplied++
 				continue
@@ -650,10 +625,10 @@ func (rf *Raft)ApplyEntries(){
 				message := ApplyMsg{true,rf.log[rf.lastApplied].Command,rf.lastApplied,false,[]byte{'a'},0,0}
 				rf.applyMessage <- message
 				rf.appliedLog = append(rf.appliedLog,rf.log[rf.lastApplied])
-				log.Printf("peer:%d update apply with applied :%d and commited %d", rf.me,rf.lastApplied,rf.commitIndex)
+
 			}
 			rf.lastApplied++
-			//log.Printf("peer:%d update apply with applied :%d and commited %d", rf.me,rf.lastApplied,rf.commitIndex)
+
 
 		}
 		rf.mu.Unlock()
@@ -683,7 +658,6 @@ func (rf *Raft) SendHeartBeat(){
 		}
 		peer := i
 		go func(server int){
-			//log.Printf("Peer %d(%d) : Be Leader and Sending void entry to %d", rf.me,rf.currentTerm,server)
 			rf.sendAppendEntry(server, args, reply)
 		}(peer)	
 	}
@@ -724,14 +698,12 @@ func (rf *Raft) SyncAppendEntry(peer int){
 				append_done := make(chan bool)
 				ok := false
 				go func(server int){
-					//log.Printf("Peer %d(%d) : Be Leader and Sending void entry to %d", rf.me,rf.currentTerm,server)
 					ok = rf.sendAppendEntry(server, args, reply)
 					append_done <-true
 				}(peer)	
 
 				select{
 					case <- append_done:
-						//log.Println("append_done")
 				}
 				
 				if ok{
@@ -741,17 +713,11 @@ func (rf *Raft) SyncAppendEntry(peer int){
 					if reply.Term<=rf.currentTerm{
 
 						if len(args.Entries) ==0 && rf.nextIndex[peer] >0{
-							//fmt.Println(args)
-							//fmt.Println(reply)
 							if reply.UpNextIndex == 0{
-								log.Printf("leader:%d receive an 0 from %d", rf.me,peer)
-								log.Println(args)
-								log.Println(reply)
 							}
 							rf.nextIndex[peer] = Max(reply.UpNextIndex,rf.matchIndex[peer] + 1)
 							
 						}else{
-							///fmt.Println("只是心跳 ")
 						}
 						rf.mu.Unlock()
 
@@ -768,15 +734,13 @@ func (rf *Raft) SyncAppendEntry(peer int){
 
 			
 			var data = make([]Entry,len(rf.log)-rf.nextIndex[peer])
-			log.Printf("len(data):%d  nextIndex:%d   len(log):%d",len(data),rf.nextIndex[peer],len(rf.log))
+
 			if len(data) > 0{
 				copy(data,rf.log[rf.nextIndex[peer]:len(rf.log)])
-				log.Printf("data len 111111111111111111    %d",len(data))
+			
 			}else{
-				log.Println("heart beat111")
 			}
 			if rf.nextIndex[peer] - 1 < 0{
-				log.Printf("wrong nextIndex %d", rf.nextIndex)
 			}
 
 			args:=&AppendEntriesArgs{
@@ -804,10 +768,7 @@ func (rf *Raft) SyncAppendEntry(peer int){
 				ok = rf.sendAppendEntry(peer, args, reply)
 				append_done<- true
 			}()
-			// go func(){
-			// 	time.Sleep(50 * time.Millisecond)
-			// 	time_out <- true
-			// }()
+
 
 			select{
 				case <- time_out:
@@ -823,24 +784,14 @@ func (rf *Raft) SyncAppendEntry(peer int){
 				if reply.Success{
 					rf.nextIndex[peer] += len(data)
 					rf.matchIndex[peer] = Max(rf.matchIndex[peer],rf.nextIndex[peer]-1)
-					log.Printf("leader:%d log success for %d and matchInde has been %d", rf.me,peer,rf.matchIndex[peer])
 					rf.mu.Unlock()
 					
 				}else{
 
 					if reply.Term<=rf.currentTerm{
-						log.Printf("leader:%d log false for %d and matchInde has been %d", rf.me,peer,rf.matchIndex[peer])
-						log.Println(len(data))
-						log.Println(reply)
-						//log.Println(reply)
-						// 按照论文基础情况，每次递减1
+
 						if len(args.Entries) !=0 && rf.nextIndex[peer] >0{
-							//fmt.Println(args)
-							//fmt.Println(reply)
 							if reply.UpNextIndex == 0{
-								log.Printf("leader:%d receive an 0 from %d", rf.me,peer)
-								log.Println(args)
-								log.Println(reply)
 							}
 							rf.nextIndex[peer] = reply.UpNextIndex
 							
@@ -875,7 +826,7 @@ func (rf * Raft) BeFollower(term int,voteFor int){
 	rf.state = Follower
 	rf.votedFor = voteFor
 	rf.candidateOut = 0
-	//rf.followerOut = 0
+
 }
 
 
@@ -908,7 +859,6 @@ func (rf *Raft) BeCandidate()  {
 	for {
 		
 		
-		log.Printf("Peer %d(%d,%d) : Being Candidate", rf.me,rf.currentTerm,rf.state)
 		if rf.killed() {
 			return
 		}
@@ -926,7 +876,6 @@ func (rf *Raft) BeCandidate()  {
 		Term := rf.currentTerm
 		rf.mu.Unlock()
 		waitFlag := sync.WaitGroup{}
-		log.Printf("Peer %d(%d,%d) : start RequestVote", rf.me,rf.currentTerm,rf.state)
 		for i := 0;i<len(rf.peers);i++{
 
 			if rf.votedFor == i{
@@ -945,7 +894,6 @@ func (rf *Raft) BeCandidate()  {
 
 				waitFlag.Add(1)
 				go func(server int){
-					//log.Printf("Peer %d(%d,%d) : RequestVote to Peer %d", rf.me,rf.currentTerm,rf.state,server)
 					ok := rf.sendRequestVote(server, args, reply)
 					
 					rf.mu.Lock()
@@ -998,26 +946,21 @@ func (rf *Raft) BeCandidate()  {
 
 		select{
 		case <- time_out:
-			log.Printf("Peer %d(%d,%d) : timeout,totalVote: %d:,voteForMe:%d", rf.me,rf.currentTerm,rf.state,totalVote,voteForMe)
 
 		case <- vote_done:
-			log.Printf("Peer %d(%d,%d)%d : Vote_Done", rf.me,rf.currentTerm,rf.state,voteForMe)
 
 		case <- vote_succ:
-			log.Printf("Peer %d(%d,%d) : Vote_Success", rf.me,rf.currentTerm,rf.state)	
 
 		}
 
 		rf.mu.Lock()
 		if rf.state == Follower || Term != rf.currentTerm{
-			log.Printf("Peer %d(%d,%d)%d : has been follower", rf.me,rf.currentTerm,rf.state,Term)	
 			rf.mu.Unlock()
 			rf.BeFollower(rf.currentTerm, NILL)
 			return
 		}
 		if voteForMe*2 >= len(rf.peers){
 			
-			log.Printf("Peer %d(%d,%d) : BeLeader", rf.me,rf.currentTerm,rf.state)	
 			rf.mu.Unlock()
 			go rf.BeLeader()
 			return
@@ -1083,6 +1026,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go rf.ApplyEntries()
 
-	log.Printf("start a server %d",rf.me)
 	return rf
 }
