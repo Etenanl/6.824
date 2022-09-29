@@ -236,6 +236,9 @@ type Raft struct {
 	LastIncludedTerm	int
 
 	// 目前不知道什么用
+
+	IsSnapShot 	bool
+	isCommit	bool
 }
 
 //
@@ -645,17 +648,17 @@ func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 			rf.mu.Unlock()
 			return
 		}
-		if rf.LastIndex() < args.PrevLogIndex {	
-			log.Printf("peer:%d  lastindex %d < prevlogIndex %d   lastapplied %d", rf.me,rf.LastIndex(),args.PrevLogIndex,rf.lastApplied)
-			rf.mu.Unlock()
-			return
-		}
 		if args.PrevLogIndex < rf.LastIncludedIndex {	
 			log.Printf("peer:%d  lastindex %d < prevlogIndex %d   lastapplied %d", rf.me,rf.LastIndex(),args.PrevLogIndex,rf.lastApplied)
 			rf.mu.Unlock()
 			return
 		}
-		log.Printf("Len  %d  realIndex %d   prevlogIndex  %d", len(rf.log),rf.ScalerIndexToReal(args.PrevLogIndex+1),args.PrevLogIndex)
+		if rf.LastIndex() < args.PrevLogIndex {	
+			log.Printf("peer:%d  lastindex %d < prevlogIndex %d   lastapplied %d", rf.me,rf.LastIndex(),args.PrevLogIndex,rf.lastApplied)
+			rf.mu.Unlock()
+			return
+		}
+		log.Printf("peer %d  Len  %d  realIndex %d   prevlogIndex  %d", rf.me,len(rf.log),rf.ScalerIndexToReal(args.PrevLogIndex+1),args.PrevLogIndex)
 		if rf.ScalerTermToReal(args.PrevLogIndex) != args.PrevLogTerm {
 			log.Printf("peer:%d  rf.log[rf.ScalerIndexToReal(args.PrevLogIndex)].Term   %d  != args.PrevLogTerm %d", rf.me,rf.log[rf.ScalerIndexToReal(args.PrevLogIndex)].Term,args.PrevLogTerm)
 			rf.log = rf.log[:rf.ScalerIndexToReal(args.PrevLogIndex + 1)]
@@ -784,12 +787,17 @@ func (rf *Raft)ApplyEntries(){
 				log.Println("3")
 				continue
 			}else{
+				if rf.IsSnapShot {
+					break
+				}
 				tempapply := rf.lastApplied
 				message := ApplyMsg{true,rf.log[rf.ScalerIndexToReal(rf.lastApplied)].Command,rf.lastApplied,false,[]byte{'a'},0,0}
+				rf.isCommit = true
 				rf.mu.Unlock()
 				rf.applyMessage <- message
 				log.Println("4")
 				rf.mu.Lock()
+				rf.isCommit = false
 				if tempapply != rf.lastApplied{
 					break
 				}
@@ -838,6 +846,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs,reply *InstallSnapShot
 	}
 	log.Printf("peer %d receive snapshot", rf.me)
 	rf.mu.Lock()
+	
 	switch{
 		case args.Term < rf.currentTerm:
 			reply.Term = rf.currentTerm
@@ -880,19 +889,25 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs,reply *InstallSnapShot
 	if index >= rf.lastApplied{
 		rf.lastApplied = index + 1
 	}
-	rf.mu.Unlock()
+	
 	rf.persist()
 	rf.persister.SaveStateAndSnapshot(rf.raftState(),args.Data)
-
+	rf.IsSnapShot = true
+	rf.mu.Unlock()
 	msg := ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      args.Data,
 		SnapshotTerm:  rf.LastIncludedTerm, 
 		SnapshotIndex: rf.LastIncludedIndex,
 	}
-	time.Sleep(10 * time.Millisecond)
+	if rf.isCommit{
+		time.Sleep(10 * time.Millisecond)
+	}
 	rf.applyMessage <- msg
 
+	rf.mu.Lock()
+	rf.IsSnapShot = false
+	rf.mu.Unlock()
 	log.Printf("peer %d handle snapshot  and end", rf.me)
 	//log.Println(rf)
 	//log.Println(args)
@@ -1131,13 +1146,7 @@ func (rf *Raft) SyncAppendEntry(peer int){
 					
 				}else{
 					if reply.Term<=rf.currentTerm{
-						 log.Printf("leader:%d log false for %d and matchInde has been %d", rf.me,peer,rf.matchIndex[peer])
-						// log.Println(len(data))
-						// log.Println(reply)
-						//log.Println(reply)
 						if len(args.Entries) !=0 && rf.nextIndex[peer] >0{
-							//log.Println(args)
-							//log.Println(reply)
 							rf.nextIndex[peer] = reply.UpNextIndex
 							
 						}else{
@@ -1156,13 +1165,10 @@ func (rf *Raft) SyncAppendEntry(peer int){
 			}else{
 				break
 			}
-
-
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
-
 
 
 func (rf * Raft) BeFollower(term int,voteFor int){
@@ -1201,144 +1207,6 @@ func (rf * Raft) BeLeader(){
 	}
 
 }
-
-
-
-// func (rf *Raft) BeCandidate()  { 
-	
-// 	for {
-		
-		
-// 		log.Printf("Peer %d(%d,%d) : Being Candidate", rf.me,rf.currentTerm,rf.state)
-// 		if rf.killed() {
-// 			return
-// 		}
-// 		rf.mu.Lock()
-// 		if rf.state != Candidate{
-// 			rf.mu.Unlock()
-// 			return
-// 		}
-	
-// 		rf.currentTerm += 1
-// 		rf.votedFor = rf.me
-
-// 		rf.persist()
-
-
-// 		rf.followerOut = 0
-// 		voteForMe := 1
-// 		totalVote := 1
-// 		Term := rf.currentTerm
-// 		rf.mu.Unlock()
-// 		waitFlag := sync.WaitGroup{}
-// 		log.Printf("Peer %d(%d,%d) : start RequestVote", rf.me,rf.currentTerm,rf.state)
-// 		//time1 := time.Now()
-// 			//log.Println(time1)
-// 		for i := 0;i<len(rf.peers);i++{
-
-// 			if rf.votedFor == i{
-// 				continue
-// 			}else{
-// 				args := &RequestVoteArgs{
-// 					Term : rf.currentTerm,
-// 					CandidateId : rf.me,
-// 					LastLogTerm : rf.LastTerm(),
-// 					LastLogIndex :  rf.LastIndex(),
-// 				}
-// 				reply := &RequestVoteReply{
-// 					Term : rf.currentTerm,
-// 					VoteGranted : false,
-// 				}
-
-// 				waitFlag.Add(1)
-// 				go func(server int){
-// 					//log.Printf("Peer %d(%d,%d) : RequestVote to Peer %d", rf.me,rf.currentTerm,rf.state,server)
-// 					ok := rf.sendRequestVote(server, args, reply)
-					
-// 					rf.mu.Lock()
-// 					if ok {
-// 						if reply.VoteGranted{
-// 							voteForMe++
-// 						}else{
-// 							if reply.Term > rf.currentTerm{
-// 								rf.mu.Unlock()
-// 								rf.BeFollower(reply.Term,NILL)
-								
-// 								return
-// 							}else if reply.Term == rf.currentTerm{
-// 								// pass
-// 							}else if reply.Term < rf.currentTerm{
-// 								// pass
-// 							}
-// 						}
-// 					}
-// 					totalVote++
-// 					waitFlag.Done()
-// 					rf.mu.Unlock()
-// 				}(i)
-				
-// 			}
-// 		}
-// 		time_out := make(chan bool)
-// 		vote_done := make(chan bool)
-// 		vote_succ := make(chan bool)
-// 		// 检查是否超时
-// 		go func(){
-// 			time.Sleep(CTimeOut * 500 *  time.Millisecond)
-// 			time_out <- true
-// 		}()
-// 		// 检查是否所有requestVote都返回
-// 		go func(){
-// 			waitFlag.Wait()
-// 			vote_done <- true	
-			
-// 		}()
-// 		//检查是否已经可以成为Leader
-// 		go func(){
-// 			for readtime := 0;readtime < CTimeOut * 5;readtime++{
-// 				time.Sleep(100 * time.Millisecond)
-// 				if voteForMe*2 >= len(rf.peers){
-// 				vote_succ <- true	
-// 				}
-// 			}
-// 		}()
-
-// 		select{
-// 		case <- time_out:
-// 			log.Printf("Peer %d(%d,%d) : timeout,totalVote: %d:,voteForMe:%d", rf.me,rf.currentTerm,rf.state,totalVote,voteForMe)
-
-// 		case <- vote_done:
-// 			log.Printf("Peer %d(%d,%d)%d : Vote_Done", rf.me,rf.currentTerm,rf.state,voteForMe)
-
-// 		case <- vote_succ:
-// 			log.Printf("Peer %d(%d,%d) : Vote_Success", rf.me,rf.currentTerm,rf.state)	
-
-// 		}
-
-// 		rf.mu.Lock()
-// 		if rf.state == Follower || Term != rf.currentTerm{
-// 			log.Printf("Peer %d(%d,%d)%d : has been follower", rf.me,rf.currentTerm,rf.state,Term)	
-// 					//time1 := time.Now().Second()
-// 			//log.Println(time1)
-// 			rf.mu.Unlock()
-// 			rf.BeFollower(rf.currentTerm, NILL)
-// 			return
-// 		}
-// 		if voteForMe*2 >= len(rf.peers){
-			
-// 			log.Printf("Peer %d(%d,%d) : BeLeader", rf.me,rf.currentTerm,rf.state)	
-// 			rf.mu.Unlock()
-// 			go rf.BeLeader()
-// 			return
-// 		}else{
-// 			rf.mu.Unlock()
-
-// 		}
-// 	time.Sleep(250 * time.Millisecond)	
-// 	}
-// }
-
-
 
 
 
@@ -1534,6 +1402,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.LastIncludedTerm = 0
 
 	rf.applyMessage = applyCh
+	rf.isCommit = false
+	rf.IsSnapShot = false
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
