@@ -1,31 +1,20 @@
-package shardkv
+package shardctrler
 
 //
-// client code to talk to a sharded key/value service.
-//
-// the client first talks to the shardctrler to find out
-// the assignment of shards (keys) to groups, and then
-// talks to the group that holds the key's shard.
+// Shardctrler clerk.
 //
 
 import "6.824/labrpc"
+import "time"
 import "crypto/rand"
 import "math/big"
-import "6.824/shardctrler"
-import "time"
 
-//
-// which shard is a key in?
-// please use this function,
-// and please do not change it.
-//
-func key2shard(key string) int {
-	shard := 0
-	if len(key) > 0 {
-		shard = int(key[0])
-	}
-	shard %= shardctrler.NShards
-	return shard
+type Clerk struct {
+	servers []*labrpc.ClientEnd
+	// Your data here.
+	me 		int64
+	leader	int
+	OPID	int
 }
 
 func nrand() int64 {
@@ -35,103 +24,130 @@ func nrand() int64 {
 	return x
 }
 
-type Clerk struct {
-	sm       *shardctrler.Clerk
-	config   shardctrler.Config
-	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
-}
-
-//
-// the tester calls MakeClerk.
-//
-// ctrlers[] is needed to call shardctrler.MakeClerk().
-//
-// make_end(servername) turns a server name from a
-// Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
-// send RPCs.
-//
-func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
+func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
-	ck.sm = shardctrler.MakeClerk(ctrlers)
-	ck.make_end = make_end
-	// You'll have to add code here.
+	ck.servers = servers
+	// Your code here.
+	ck.me = nrand()
+	ck.leader = 0
+	ck.OPID = 1
 	return ck
 }
 
-//
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-// You will have to modify this function.
-//
-func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
-
-	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply GetReply
-				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					return reply.Value
-				}
-				if ok && (reply.Err == ErrWrongGroup) {
-					break
-				}
-				// ... not ok, or ErrWrongLeader
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+func (ck *Clerk) Query(num int) Config {
+	args := &QueryArgs{
+		Num : num,
+		ClientID : ck.me,
+		OPID : ck.OPID,
 	}
+	ck.OPID++
+	serverID := ck.leader
+	// Your code here.
 
-	return ""
+	for i := 0 ;i< ReTry;{
+		reply := &QueryReply{}
+		// try each known server.
+		ok := ck.servers[serverID].Call("ShardCtrler.Query", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown{
+			if !ok{
+				i++
+			}else{
+				i=0
+			}
+			serverID = (serverID + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrInitElection{
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ck.leader = serverID
+		return	reply.Config
+	}
+	return  Config{Num: -1}
 }
 
-//
-// shared by Put and Append.
-// You will have to modify this function.
-//
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+func (ck *Clerk) Join(servers map[int][]string) {
+	args := &JoinArgs{
+		Servers : servers,
+		ClientID : ck.me,
+		OPID : ck.OPID,
+	}
 
+	ck.OPID++
+	serverID := ck.leader
+	// Your code here.
 
 	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.Err == OK {
-					return
-				}
-				if ok && reply.Err == ErrWrongGroup {
-					break
-				}
-				// ... not ok, or ErrWrongLeader
-			}
+		reply := &JoinReply{}
+		// try each known server.
+		ok := ck.servers[serverID].Call("ShardCtrler.Join", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown{
+			serverID = (serverID + 1) % len(ck.servers)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
-		// ask controler for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+		if reply.Err == ErrInitElection{
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ck.leader = serverID
+		return
 	}
 }
 
-func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+func (ck *Clerk) Leave(gids []int) {
+	args := &LeaveArgs{
+		GIDs : gids,
+		ClientID : ck.me,
+		OPID : ck.OPID,
+	}
+
+	ck.OPID++
+	serverID := ck.leader
+	// Your code here.
+
+	for {
+		reply := &LeaveReply{}
+		// try each known server.
+		ok := ck.servers[serverID].Call("ShardCtrler.Leave", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown{
+			serverID = (serverID + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrInitElection{
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ck.leader = serverID
+		return
+	}
 }
-func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+
+func (ck *Clerk) Move(shard int, gid int) {
+	args := &MoveArgs{
+		Shard : shard,
+		GID : gid,
+		ClientID : ck.me,
+		OPID : ck.OPID,
+	}
+
+	ck.OPID++
+	serverID := ck.leader
+	// Your code here.
+
+	for {
+		reply := &MoveReply{}
+		// try each known server.
+		ok := ck.servers[serverID].Call("ShardCtrler.Move", args, reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrShutdown{
+			serverID = (serverID + 1) % len(ck.servers)
+			continue
+		}
+		if reply.Err == ErrInitElection{
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		ck.leader = serverID
+		return
+	}
 }
